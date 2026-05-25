@@ -1,0 +1,25 @@
+[package]
+name        = "dmg"
+version     = "0.1.0"
+edition     = "2021"
+rust-version = "1.85"
+description = "Pure-Rust forensic Apple Disk Image (DMG/UDIF) reader"
+license     = "MIT"
+repository  = "https://github.com/SecurityRonin/dmg"
+homepage    = "https://github.com/SecurityRonin/dmg"
+documentation = "https://docs.rs/dmg"
+authors     = ["Albert Hui"]
+keywords    = ["forensics", "dmg", "disk-image", "apple", "udif"]
+categories  = ["parser-implementations", "filesystem"]
+
+[dependencies]
+thiserror = { workspace = true }
+quick-xml = { workspace = true }
+base64    = { workspace = true }
+flate2    = { workspace = true }
+
+[dev-dependencies]
+tempfile  = { workspace = true }
+
+[lints]
+workspace = true
