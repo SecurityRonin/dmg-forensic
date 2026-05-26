@@ -307,8 +307,22 @@ fn parse_plist(xml: &str) -> Result<Vec<Partition>, DmgError> {
 }
 
 /// Parse a raw mish block into a `Partition`.
+///
+/// Real mish layout (all big-endian):
+///   0-3:    magic "mish"
+///   4-7:    version
+///   8-15:   firstSectorNumber
+///   16-23:  sectorCount
+///   24-31:  dataStart (byte offset into data fork)
+///   32-35:  decompressBufferRequested
+///   36-63:  reserved (28 bytes)
+///   64-67:  checksum.type
+///   68-71:  checksum.size (= 32 u32 words)
+///   72-199: checksum.data (128 bytes)
+///   200-203: blockDescriptorCount
+///   204+:   BLKXRun entries (40 bytes each)
 fn parse_mish(data: &[u8]) -> Result<Partition, DmgError> {
-    if data.len() < 92 {
+    if data.len() < 204 {
         return Err(DmgError::BadMish("too short".into()));
     }
     let magic = u32::from_be_bytes(data[0..4].try_into().unwrap());
@@ -317,9 +331,9 @@ fn parse_mish(data: &[u8]) -> Result<Partition, DmgError> {
     }
     let sector_number = u64::from_be_bytes(data[8..16].try_into().unwrap());
     let file_data_offset = u64::from_be_bytes(data[24..32].try_into().unwrap());
-    let block_descriptors = u32::from_be_bytes(data[36..40].try_into().unwrap()) as usize;
+    let block_descriptors = u32::from_be_bytes(data[200..204].try_into().unwrap()) as usize;
 
-    let runs_start = 92;
+    let runs_start = 204;
     let run_size = 40;
     if data.len() < runs_start + block_descriptors * run_size {
         return Err(DmgError::BadMish("truncated run list".into()));
@@ -377,17 +391,27 @@ mod tests {
         }
 
         // Phase 2: build the mish block (binary, big-endian).
-        let block_descriptors = runs.len() + 1; // +1 for terminator
+        // Header is 204 bytes before the first run entry (see parse_mish layout comment).
+        let block_descriptors = runs.len() + 1; // +1 for BLK_TERM terminator
+        let total_data_written: u64 = run_file_offsets.last().map_or(0, |&off| {
+            let last = &runs[runs.len() - 1];
+            off + last.data.len() as u64
+        });
         let mut mish: Vec<u8> = Vec::new();
-        mish.extend_from_slice(&MISH_MAGIC.to_be_bytes());
-        mish.extend_from_slice(&1u32.to_be_bytes()); // version
-        mish.extend_from_slice(&0u64.to_be_bytes()); // sector_number
-        mish.extend_from_slice(&(sector_count).to_be_bytes()); // sector_count
-        mish.extend_from_slice(&mish_data_offset.to_be_bytes()); // data_offset
-        mish.extend_from_slice(&0u32.to_be_bytes()); // buffers_needed
-        mish.extend_from_slice(&(block_descriptors as u32).to_be_bytes());
-        mish.extend_from_slice(&[0u8; 52]); // checksum placeholder
+        mish.extend_from_slice(&MISH_MAGIC.to_be_bytes());     // 0-3
+        mish.extend_from_slice(&1u32.to_be_bytes());           // 4-7:  version
+        mish.extend_from_slice(&0u64.to_be_bytes());           // 8-15: sector_number
+        mish.extend_from_slice(&sector_count.to_be_bytes());   // 16-23: sector_count
+        mish.extend_from_slice(&mish_data_offset.to_be_bytes()); // 24-31: data_offset
+        mish.extend_from_slice(&0u32.to_be_bytes());           // 32-35: buffers_needed
+        mish.extend_from_slice(&[0u8; 28]);                    // 36-63: reserved
+        // Checksum at offset 64 (136 bytes: type + size + data[32 u32s])
+        mish.extend_from_slice(&2u32.to_be_bytes());           // 64-67: checksum.type (CRC32)
+        mish.extend_from_slice(&32u32.to_be_bytes());          // 68-71: checksum.size
+        mish.extend_from_slice(&[0u8; 128]);                   // 72-199: checksum.data (zeros)
+        mish.extend_from_slice(&(block_descriptors as u32).to_be_bytes()); // 200-203: count
 
+        // Runs at offset 204 (40 bytes each: type + reserved + sec_start + sec_count + d_off + d_len)
         for (i, r) in runs.iter().enumerate() {
             let data_off = run_file_offsets[i];
             let data_len = r.data.len() as u64;
@@ -398,14 +422,13 @@ mod tests {
             mish.extend_from_slice(&data_off.to_be_bytes());
             mish.extend_from_slice(&data_len.to_be_bytes());
         }
-        // Terminator run
-        for _ in 0..5 {
-            mish.extend_from_slice(&0u64.to_be_bytes());
-        }
-        mish.extend_from_slice(&BLK_TERM.to_be_bytes());
-        for _ in 0..4 {
-            mish.extend_from_slice(&0u64.to_be_bytes());
-        }
+        // Terminator run (BLK_TERM, 40 bytes)
+        mish.extend_from_slice(&BLK_TERM.to_be_bytes());      // type
+        mish.extend_from_slice(&0u32.to_be_bytes());           // reserved
+        mish.extend_from_slice(&sector_count.to_be_bytes());  // sector_start = end
+        mish.extend_from_slice(&0u64.to_be_bytes());           // sector_count = 0
+        mish.extend_from_slice(&total_data_written.to_be_bytes()); // data_offset
+        mish.extend_from_slice(&0u64.to_be_bytes());           // data_length = 0
 
         // Phase 3: base64-encode the mish block.
         let mish_b64 = base64::engine::general_purpose::STANDARD.encode(&mish);
