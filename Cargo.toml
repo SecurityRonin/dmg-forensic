@@ -2,6 +2,15 @@
 resolver = "2"
 members = ["dmg"]
 
+# Single source of truth for fields shared by every member (DRY): bump version /
+# MSRV / license here once; members inherit via `field.workspace = true`.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/SecurityRonin/dmg"
+
 [workspace.dependencies]
 thiserror = "2"
 tempfile  = "3"

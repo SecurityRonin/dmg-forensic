@@ -1,11 +1,11 @@
 [package]
 name        = "dmg"
-version     = "0.1.0"
-edition     = "2021"
-rust-version = "1.85"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Pure-Rust forensic Apple Disk Image (DMG/UDIF) reader"
-license     = "MIT"
-repository  = "https://github.com/SecurityRonin/dmg"
 homepage    = "https://github.com/SecurityRonin/dmg"
 documentation = "https://docs.rs/dmg"
 authors     = ["Albert Hui"]
