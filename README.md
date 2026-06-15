@@ -1,6 +1,6 @@
 [![Crates.io](https://img.shields.io/crates/v/dmg.svg)](https://crates.io/crates/dmg)
 [![Docs.rs](https://img.shields.io/docsrs/dmg)](https://docs.rs/dmg)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/SecurityRonin/dmg/actions/workflows/ci.yml/badge.svg)](https://github.com/SecurityRonin/dmg/actions/workflows/ci.yml)
 [![Sponsor](https://img.shields.io/badge/sponsor-h4x0r-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/h4x0r)
 
