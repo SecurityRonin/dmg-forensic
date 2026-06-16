@@ -1,0 +1,21 @@
+[package]
+name = "dmg-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[[bin]]
+name = "fuzz_open"
+path = "fuzz_targets/fuzz_open.rs"
+test = false
+doc = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dmg = { package = "dmg-core", path = "../dmg", default-features = false }
+tempfile = "3"

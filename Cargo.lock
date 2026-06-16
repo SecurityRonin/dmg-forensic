@@ -42,7 +42,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dmg"
+name = "dmg-core"
 version = "0.1.0"
 dependencies = [
  "base64",

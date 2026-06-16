@@ -1,5 +1,5 @@
 [package]
-name        = "dmg"
+name        = "dmg-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,10 @@ documentation = "https://docs.rs/dmg"
 authors     = ["Albert Hui"]
 keywords    = ["forensics", "dmg", "disk-image", "apple", "udif"]
 categories  = ["parser-implementations", "filesystem"]
+
+[lib]
+name = "dmg"
+path = "src/lib.rs"
 
 [dependencies]
 thiserror = { workspace = true }
