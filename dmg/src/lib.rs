@@ -6,25 +6,31 @@
 //! - Each blkx `Data` field is a base64-encoded **mish** block describing
 //!   how virtual sectors map to data in the file
 //!
-//! Supported block types: zero (0x00), raw (0x01), ignore (0x02), zlib (0x80000005).
-//! bzip2 (0x80000006) and LZFSE (0x80000007) return `NotSupported`.
+//! Supported block types: zero (`0x00`), raw (`0x01`), ignore (`0x02`), ADC
+//! (`0x80000004`), zlib/UDZO (`0x80000005`), bzip2/UDBZ (`0x80000006`),
+//! LZFSE/ULFO (`0x80000007`), and LZMA/ULMO (`0x80000008`) — every codec
+//! `hdiutil` emits. All decoders are pure Rust (no C dependencies).
 
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use base64::Engine;
 use flate2::read::ZlibDecoder;
-use quick_xml::Reader;
 use quick_xml::events::Event;
+use quick_xml::Reader;
 use thiserror::Error;
 
-const KOLY_MAGIC: u32 = 0x6B6F6C79; // b"koly"
-const MISH_MAGIC: u32 = 0x6D697368; // b"mish"
+const KOLY_MAGIC: u32 = 0x6B6F_6C79; // b"koly"
+const MISH_MAGIC: u32 = 0x6D69_7368; // b"mish"
 const KOLY_SIZE: u64 = 512;
 
 const BLK_ZERO: u32 = 0x0000_0000;
 const BLK_RAW: u32 = 0x0000_0001;
 const BLK_IGNORE: u32 = 0x0000_0002;
+const BLK_ADC: u32 = 0x8000_0004;
 const BLK_ZLIB: u32 = 0x8000_0005;
+const BLK_BZIP2: u32 = 0x8000_0006;
+const BLK_LZFSE: u32 = 0x8000_0007;
+const BLK_LZMA: u32 = 0x8000_0008;
 const BLK_COMMENT: u32 = 0x7FFF_FFFE;
 const BLK_TERM: u32 = 0xFFFF_FFFF;
 
@@ -47,7 +53,7 @@ pub enum DmgError {
     NotSupported(u32),
 }
 
-/// One BLKXRun entry from a mish block.
+/// One `BLKXRun` entry from a mish block.
 #[derive(Debug, Clone)]
 struct BlkxRun {
     entry_type: u32,
@@ -87,7 +93,7 @@ impl Partition {
         local < self.total_sectors()
     }
 
-    /// Find the run covering local sector `local_sec` (relative to sector_base).
+    /// Find the run covering local sector `local_sec` (relative to `sector_base`).
     fn run_for(&self, local_sec: u64) -> Option<&BlkxRun> {
         self.runs.iter().find(|r| {
             r.entry_type != BLK_TERM
@@ -133,12 +139,16 @@ impl<R: Read + Seek> DmgReader<R> {
         reader.seek(SeekFrom::Start(xml_offset))?;
         let mut xml_bytes = vec![0u8; xml_length as usize];
         reader.read_exact(&mut xml_bytes)?;
-        let xml = std::str::from_utf8(&xml_bytes)
-            .map_err(|e| DmgError::BadPlist(e.to_string()))?;
+        let xml = std::str::from_utf8(&xml_bytes).map_err(|e| DmgError::BadPlist(e.to_string()))?;
 
         let partitions = parse_plist(xml)?;
 
-        Ok(Self { inner: reader, sector_count, partitions, position: 0 })
+        Ok(Self {
+            inner: reader,
+            sector_count,
+            partitions,
+            position: 0,
+        })
     }
 
     /// Total virtual disk size in bytes (`sector_count × 512`).
@@ -183,26 +193,27 @@ impl<R: Read + Seek> Read for DmgReader<R> {
                 buf[..to_read].fill(0);
             }
             BLK_RAW => {
-                let file_pos =
-                    part.file_data_offset + run.data_offset + bytes_into_run;
+                let file_pos = part.file_data_offset + run.data_offset + bytes_into_run;
                 self.inner.seek(SeekFrom::Start(file_pos))?;
                 self.inner.read_exact(&mut buf[..to_read])?;
             }
-            BLK_ZLIB => {
-                // Decompress the entire run, then slice.
+            BLK_ADC | BLK_ZLIB | BLK_BZIP2 | BLK_LZFSE | BLK_LZMA => {
+                // Decompress the entire run, then slice out the requested window.
                 let file_pos = part.file_data_offset + run.data_offset;
                 self.inner.seek(SeekFrom::Start(file_pos))?;
                 let mut compressed = vec![0u8; run.data_length as usize];
                 self.inner.read_exact(&mut compressed)?;
-                let mut decompressed = Vec::with_capacity(run.sector_count as usize * 512);
-                ZlibDecoder::new(Cursor::new(compressed))
-                    .read_to_end(&mut decompressed)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let decompressed =
+                    decompress(run.entry_type, &compressed, run.sector_count as usize * 512)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 let start = bytes_into_run as usize;
-                let end = (start + to_read).min(decompressed.len());
                 if start >= decompressed.len() {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "zlib underrun"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "decompressed run underrun",
+                    ));
                 }
+                let end = (start + to_read).min(decompressed.len());
                 buf[..end - start].copy_from_slice(&decompressed[start..end]);
             }
             t => {
@@ -243,6 +254,94 @@ impl<R: Read + Seek> Seek for DmgReader<R> {
     }
 }
 
+// ── Block codecs (all pure Rust) ────────────────────────────────────────────
+
+/// Decompress one UDIF block's data with the codec named by `entry_type`.
+/// `expected_len` (the run's `sector_count × 512`) sizes the output buffer.
+fn decompress(
+    entry_type: u32,
+    compressed: &[u8],
+    expected_len: usize,
+) -> Result<Vec<u8>, DmgError> {
+    let mut out = Vec::with_capacity(expected_len);
+    match entry_type {
+        BLK_ZLIB => {
+            ZlibDecoder::new(Cursor::new(compressed))
+                .read_to_end(&mut out)
+                .map_err(|e| DmgError::Compression(e.to_string()))?;
+        }
+        BLK_BZIP2 => {
+            bzip2_rs::DecoderReader::new(Cursor::new(compressed))
+                .read_to_end(&mut out)
+                .map_err(|e| DmgError::Compression(e.to_string()))?;
+        }
+        BLK_LZMA => {
+            // ULMO blocks are XZ-framed (stream magic FD 37 7A 58 5A 00), not
+            // raw LZMA1.
+            let mut input = Cursor::new(compressed);
+            lzma_rs::xz_decompress(&mut input, &mut out)
+                .map_err(|e| DmgError::Compression(e.to_string()))?;
+        }
+        BLK_LZFSE => {
+            lzfse_rust::decode_bytes(compressed, &mut out)
+                .map_err(|e| DmgError::Compression(e.to_string()))?;
+        }
+        BLK_ADC => out = adc_decompress(compressed, expected_len),
+        other => return Err(DmgError::NotSupported(other)),
+    }
+    Ok(out)
+}
+
+/// Decode an Apple Data Compression (ADC) block — the simple LZSS variant used
+/// by UDCO images. Three token forms: a literal run (high bit set), a 2-byte
+/// short match, and a 3-byte long match (both back-references into the output).
+fn adc_decompress(input: &[u8], expected_len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(expected_len);
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        i += 1;
+        if b & 0x80 != 0 {
+            // Literal run of (b & 0x7F) + 1 bytes.
+            let n = (b & 0x7F) as usize + 1;
+            let end = (i + n).min(input.len());
+            out.extend_from_slice(&input[i..end]);
+            i = end;
+        } else if b & 0x40 != 0 {
+            // 3-byte form: length (b & 0x3F) + 4, 16-bit back-offset.
+            if i + 1 >= input.len() {
+                break;
+            }
+            let len = (b & 0x3F) as usize + 4;
+            let offset = ((input[i] as usize) << 8) | input[i + 1] as usize;
+            i += 2;
+            copy_back(&mut out, offset, len);
+        } else {
+            // 2-byte form: length ((b >> 2) & 0x0F) + 3, 10-bit back-offset.
+            if i >= input.len() {
+                break;
+            }
+            let len = ((b >> 2) & 0x0F) as usize + 3;
+            let offset = (((b & 0x03) as usize) << 8) | input[i] as usize;
+            i += 1;
+            copy_back(&mut out, offset, len);
+        }
+    }
+    out
+}
+
+/// LZSS back-reference copy of `len` bytes from `offset + 1` behind the end of
+/// `out`, byte-by-byte so overlapping (run-length) copies work.
+fn copy_back(out: &mut Vec<u8>, offset: usize, len: usize) {
+    for _ in 0..len {
+        if out.len() <= offset {
+            break;
+        }
+        let byte = out[out.len() - 1 - offset];
+        out.push(byte);
+    }
+}
+
 // ── XML plist parser ──────────────────────────────────────────────────────────
 
 /// Parse the XML plist and extract all mish (blkx) partitions.
@@ -258,7 +357,6 @@ fn parse_plist(xml: &str) -> Result<Vec<Partition>, DmgError> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => match e.name().as_ref() {
-                b"key" => {}
                 b"array" if last_key == "blkx" => {
                     in_blkx = true;
                 }
@@ -320,7 +418,7 @@ fn parse_plist(xml: &str) -> Result<Vec<Partition>, DmgError> {
 ///   68-71:  checksum.size (= 32 u32 words)
 ///   72-199: checksum.data (128 bytes)
 ///   200-203: blockDescriptorCount
-///   204+:   BLKXRun entries (40 bytes each)
+///   204+:   `BLKXRun` entries (40 bytes each)
 fn parse_mish(data: &[u8]) -> Result<Partition, DmgError> {
     if data.len() < 204 {
         return Err(DmgError::BadMish("too short".into()));
@@ -347,13 +445,23 @@ fn parse_mish(data: &[u8]) -> Result<Partition, DmgError> {
         let sector_count = u64::from_be_bytes(data[o + 16..o + 24].try_into().unwrap());
         let data_offset = u64::from_be_bytes(data[o + 24..o + 32].try_into().unwrap());
         let data_length = u64::from_be_bytes(data[o + 32..o + 40].try_into().unwrap());
-        runs.push(BlkxRun { entry_type, sector_start, sector_count, data_offset, data_length });
+        runs.push(BlkxRun {
+            entry_type,
+            sector_start,
+            sector_count,
+            data_offset,
+            data_length,
+        });
         if entry_type == BLK_TERM {
             break;
         }
     }
 
-    Ok(Partition { file_data_offset, sector_base: sector_number, runs })
+    Ok(Partition {
+        file_data_offset,
+        sector_base: sector_number,
+        runs,
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -379,6 +487,7 @@ mod tests {
     ///   [data bytes for all raw/compressed runs]
     ///   [xml plist]
     ///   [512-byte koly trailer]
+    #[allow(clippy::needless_pass_by_value)] // test helper; owned input is fine
     fn make_dmg(sector_count: u64, runs: Vec<RunDef>) -> Vec<u8> {
         let mut file: Vec<u8> = Vec::new();
 
@@ -398,17 +507,17 @@ mod tests {
             off + last.data.len() as u64
         });
         let mut mish: Vec<u8> = Vec::new();
-        mish.extend_from_slice(&MISH_MAGIC.to_be_bytes());     // 0-3
-        mish.extend_from_slice(&1u32.to_be_bytes());           // 4-7:  version
-        mish.extend_from_slice(&0u64.to_be_bytes());           // 8-15: sector_number
-        mish.extend_from_slice(&sector_count.to_be_bytes());   // 16-23: sector_count
+        mish.extend_from_slice(&MISH_MAGIC.to_be_bytes()); // 0-3
+        mish.extend_from_slice(&1u32.to_be_bytes()); // 4-7:  version
+        mish.extend_from_slice(&0u64.to_be_bytes()); // 8-15: sector_number
+        mish.extend_from_slice(&sector_count.to_be_bytes()); // 16-23: sector_count
         mish.extend_from_slice(&mish_data_offset.to_be_bytes()); // 24-31: data_offset
-        mish.extend_from_slice(&0u32.to_be_bytes());           // 32-35: buffers_needed
-        mish.extend_from_slice(&[0u8; 28]);                    // 36-63: reserved
-        // Checksum at offset 64 (136 bytes: type + size + data[32 u32s])
-        mish.extend_from_slice(&2u32.to_be_bytes());           // 64-67: checksum.type (CRC32)
-        mish.extend_from_slice(&32u32.to_be_bytes());          // 68-71: checksum.size
-        mish.extend_from_slice(&[0u8; 128]);                   // 72-199: checksum.data (zeros)
+        mish.extend_from_slice(&0u32.to_be_bytes()); // 32-35: buffers_needed
+        mish.extend_from_slice(&[0u8; 28]); // 36-63: reserved
+                                            // Checksum at offset 64 (136 bytes: type + size + data[32 u32s])
+        mish.extend_from_slice(&2u32.to_be_bytes()); // 64-67: checksum.type (CRC32)
+        mish.extend_from_slice(&32u32.to_be_bytes()); // 68-71: checksum.size
+        mish.extend_from_slice(&[0u8; 128]); // 72-199: checksum.data (zeros)
         mish.extend_from_slice(&(block_descriptors as u32).to_be_bytes()); // 200-203: count
 
         // Runs at offset 204 (40 bytes each: type + reserved + sec_start + sec_count + d_off + d_len)
@@ -423,12 +532,12 @@ mod tests {
             mish.extend_from_slice(&data_len.to_be_bytes());
         }
         // Terminator run (BLK_TERM, 40 bytes)
-        mish.extend_from_slice(&BLK_TERM.to_be_bytes());      // type
-        mish.extend_from_slice(&0u32.to_be_bytes());           // reserved
-        mish.extend_from_slice(&sector_count.to_be_bytes());  // sector_start = end
-        mish.extend_from_slice(&0u64.to_be_bytes());           // sector_count = 0
+        mish.extend_from_slice(&BLK_TERM.to_be_bytes()); // type
+        mish.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        mish.extend_from_slice(&sector_count.to_be_bytes()); // sector_start = end
+        mish.extend_from_slice(&0u64.to_be_bytes()); // sector_count = 0
         mish.extend_from_slice(&total_data_written.to_be_bytes()); // data_offset
-        mish.extend_from_slice(&0u64.to_be_bytes());           // data_length = 0
+        mish.extend_from_slice(&0u64.to_be_bytes()); // data_length = 0
 
         // Phase 3: base64-encode the mish block.
         let mish_b64 = base64::engine::general_purpose::STANDARD.encode(&mish);
@@ -471,11 +580,16 @@ mod tests {
     }
 
     fn zero_run(sector_start: u64, sector_count: u64) -> RunDef {
-        RunDef { entry_type: BLK_ZERO, sector_start, sector_count, data: vec![] }
+        RunDef {
+            entry_type: BLK_ZERO,
+            sector_start,
+            sector_count,
+            data: vec![],
+        }
     }
 
     fn zlib_run(sector_start: u64, uncompressed: &[u8]) -> RunDef {
-        use flate2::{Compression, write::ZlibEncoder};
+        use flate2::{write::ZlibEncoder, Compression};
         use std::io::Write;
         let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
         enc.write_all(uncompressed).unwrap();
