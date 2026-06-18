@@ -11,7 +11,7 @@
 //! LZFSE/ULFO (`0x80000007`), and LZMA/ULMO (`0x80000008`) — every codec
 //! `hdiutil` emits. All decoders are pure Rust (no C dependencies).
 
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
 use base64::Engine;
 use flate2::read::ZlibDecoder;
@@ -33,6 +33,12 @@ const BLK_LZFSE: u32 = 0x8000_0007;
 const BLK_LZMA: u32 = 0x8000_0008;
 const BLK_COMMENT: u32 = 0x7FFF_FFFE;
 const BLK_TERM: u32 = 0xFFFF_FFFF;
+
+/// Hard cap on a single block's decompressed size. UDIF chunks are ~2 MiB
+/// (`decompressBufferRequested`); 64 MiB is generous headroom while bounding the
+/// allocation a malformed/oversized block can request (defends against memory-exhaustion and
+/// decompression bombs — see `decompress`).
+const MAX_RUN_BYTES: usize = 64 * 1024 * 1024;
 
 /// Errors returned by `DmgReader`.
 #[derive(Debug, Error)]
@@ -80,7 +86,7 @@ impl Partition {
         self.runs
             .iter()
             .filter(|r| r.entry_type != BLK_COMMENT && r.entry_type != BLK_TERM)
-            .map(|r| r.sector_start + r.sector_count)
+            .map(|r| r.sector_start.saturating_add(r.sector_count))
             .max()
             .unwrap_or(0)
     }
@@ -99,7 +105,7 @@ impl Partition {
             r.entry_type != BLK_TERM
                 && r.entry_type != BLK_COMMENT
                 && local_sec >= r.sector_start
-                && local_sec < r.sector_start + r.sector_count
+                && local_sec < r.sector_start.saturating_add(r.sector_count)
         })
     }
 }
@@ -108,6 +114,9 @@ impl Partition {
 pub struct DmgReader<R: Read + Seek> {
     inner: R,
     sector_count: u64,
+    /// Total file size, used to reject out-of-bounds block references (a
+    /// malformed image cannot make us allocate or read past the file).
+    file_size: u64,
     partitions: Vec<Partition>,
     position: u64,
 }
@@ -135,6 +144,15 @@ impl<R: Read + Seek> DmgReader<R> {
         let xml_length = u64::from_be_bytes(koly[224..232].try_into().unwrap());
         let sector_count = u64::from_be_bytes(koly[492..500].try_into().unwrap());
 
+        // Reject an XML plist that claims to extend past the file — otherwise a
+        // malformed koly could request a multi-terabyte allocation.
+        if xml_offset
+            .checked_add(xml_length)
+            .is_none_or(|end| end > file_size)
+        {
+            return Err(DmgError::BadPlist("xml region out of file bounds".into()));
+        }
+
         // Read the XML plist.
         reader.seek(SeekFrom::Start(xml_offset))?;
         let mut xml_bytes = vec![0u8; xml_length as usize];
@@ -146,6 +164,7 @@ impl<R: Read + Seek> DmgReader<R> {
         Ok(Self {
             inner: reader,
             sector_count,
+            file_size,
             partitions,
             position: 0,
         })
@@ -153,7 +172,7 @@ impl<R: Read + Seek> DmgReader<R> {
 
     /// Total virtual disk size in bytes (`sector_count × 512`).
     pub fn virtual_disk_size(&self) -> u64 {
-        self.sector_count * 512
+        self.sector_count.saturating_mul(512)
     }
 }
 
@@ -183,8 +202,11 @@ impl<R: Read + Seek> Read for DmgReader<R> {
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "no run"))?;
 
         // Byte offset within this run (relative to the run's first sector).
-        let bytes_into_run = (local_sec - run.sector_start) * 512 + sec_offset;
-        let run_total_bytes = run.sector_count * 512;
+        // Saturating throughout: a malformed run must never panic on overflow.
+        let bytes_into_run = (local_sec - run.sector_start)
+            .saturating_mul(512)
+            .saturating_add(sec_offset);
+        let run_total_bytes = run.sector_count.saturating_mul(512);
         let available_in_run = run_total_bytes.saturating_sub(bytes_into_run);
         let to_read = buf.len().min(available_in_run as usize);
 
@@ -193,19 +215,50 @@ impl<R: Read + Seek> Read for DmgReader<R> {
                 buf[..to_read].fill(0);
             }
             BLK_RAW => {
-                let file_pos = part.file_data_offset + run.data_offset + bytes_into_run;
+                // Checked + file-bounded: a malformed offset must error, not
+                // overflow or read past the file.
+                let file_pos = part
+                    .file_data_offset
+                    .checked_add(run.data_offset)
+                    .and_then(|p| p.checked_add(bytes_into_run))
+                    .filter(|&p| p.saturating_add(to_read as u64) <= self.file_size)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "raw block out of file bounds")
+                    })?;
                 self.inner.seek(SeekFrom::Start(file_pos))?;
                 self.inner.read_exact(&mut buf[..to_read])?;
             }
             BLK_ADC | BLK_ZLIB | BLK_BZIP2 | BLK_LZFSE | BLK_LZMA => {
-                // Decompress the entire run, then slice out the requested window.
-                let file_pos = part.file_data_offset + run.data_offset;
+                // Bound both sizes before allocating: the compressed region must
+                // lie within the file, and the decompressed run must fit the cap.
+                // A malformed image otherwise requests a multi-terabyte buffer.
+                let file_pos = part
+                    .file_data_offset
+                    .checked_add(run.data_offset)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "block offset overflow")
+                    })?;
+                let comp_ok = file_pos
+                    .checked_add(run.data_length)
+                    .is_some_and(|end| end <= self.file_size);
+                if !comp_ok {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "compressed block extends past end of file",
+                    ));
+                }
+                let expected = (run.sector_count as usize).saturating_mul(512);
+                if expected > MAX_RUN_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "block decompressed size exceeds cap",
+                    ));
+                }
                 self.inner.seek(SeekFrom::Start(file_pos))?;
                 let mut compressed = vec![0u8; run.data_length as usize];
                 self.inner.read_exact(&mut compressed)?;
-                let decompressed =
-                    decompress(run.entry_type, &compressed, run.sector_count as usize * 512)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let decompressed = decompress(run.entry_type, &compressed, expected)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 let start = bytes_into_run as usize;
                 if start >= decompressed.len() {
                     return Err(io::Error::new(
@@ -263,27 +316,40 @@ fn decompress(
     compressed: &[u8],
     expected_len: usize,
 ) -> Result<Vec<u8>, DmgError> {
+    // `expected_len` is the caller-validated cap (<= MAX_RUN_BYTES). Every codec
+    // bounds its output to it so a decompression bomb cannot exhaust memory.
     let mut out = Vec::with_capacity(expected_len);
+    let cap = expected_len as u64;
     match entry_type {
         BLK_ZLIB => {
             ZlibDecoder::new(Cursor::new(compressed))
+                .take(cap)
                 .read_to_end(&mut out)
                 .map_err(|e| DmgError::Compression(e.to_string()))?;
         }
         BLK_BZIP2 => {
             bzip2_rs::DecoderReader::new(Cursor::new(compressed))
+                .take(cap)
                 .read_to_end(&mut out)
                 .map_err(|e| DmgError::Compression(e.to_string()))?;
         }
         BLK_LZMA => {
             // ULMO blocks are XZ-framed (stream magic FD 37 7A 58 5A 00), not
-            // raw LZMA1.
+            // raw LZMA1. A LimitWriter caps the output at the cap.
             let mut input = Cursor::new(compressed);
-            lzma_rs::xz_decompress(&mut input, &mut out)
+            let mut sink = LimitWriter {
+                buf: &mut out,
+                limit: expected_len,
+            };
+            lzma_rs::xz_decompress(&mut input, &mut sink)
                 .map_err(|e| DmgError::Compression(e.to_string()))?;
         }
         BLK_LZFSE => {
-            lzfse_rust::decode_bytes(compressed, &mut out)
+            let mut decoder = lzfse_rust::LzfseRingDecoder::default();
+            decoder
+                .reader_bytes(compressed)
+                .take(cap)
+                .read_to_end(&mut out)
                 .map_err(|e| DmgError::Compression(e.to_string()))?;
         }
         BLK_ADC => out = adc_decompress(compressed, expected_len),
@@ -298,7 +364,9 @@ fn decompress(
 fn adc_decompress(input: &[u8], expected_len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(expected_len);
     let mut i = 0;
-    while i < input.len() {
+    // Stop at the cap so a malformed stream of back-references can't grow the
+    // output without bound.
+    while i < input.len() && out.len() < expected_len {
         let b = input[i];
         i += 1;
         if b & 0x80 != 0 {
@@ -339,6 +407,31 @@ fn copy_back(out: &mut Vec<u8>, offset: usize, len: usize) {
         }
         let byte = out[out.len() - 1 - offset];
         out.push(byte);
+    }
+}
+
+/// A `Write` adapter that appends to a `Vec` but errors once `limit` bytes have
+/// been written — caps streaming decoders (XZ) so a decompression bomb cannot
+/// exhaust memory.
+struct LimitWriter<'a> {
+    buf: &'a mut Vec<u8>,
+    limit: usize,
+}
+
+impl Write for LimitWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.buf.len() + data.len() > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "decompressed output exceeds cap",
+            ));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

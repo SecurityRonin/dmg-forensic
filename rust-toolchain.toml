@@ -1,0 +1,5 @@
+[toolchain]
+# Dev/CI toolchain pinned to current stable (fleet policy). The declared MSRV
+# (workspace `rust-version`) is lower and CI-verified — the downstream promise.
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
