@@ -13,7 +13,7 @@
 
 mod sparse;
 
-pub use sparse::SparseImageReader;
+pub use sparse::{SparseBundleReader, SparseImageReader};
 
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 

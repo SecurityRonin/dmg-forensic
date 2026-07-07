@@ -7,6 +7,10 @@
 //! `hdiutil convert … -format UDTO`.
 
 use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+use quick_xml::events::Event;
+use quick_xml::Reader;
 
 use crate::DmgError;
 
@@ -19,11 +23,10 @@ const BAND_TABLE_OFFSET: usize = 0x40;
 /// Bounds-checked big-endian `u32` read: yields 0 (never panics) when `off`
 /// is out of range, so a truncated/hostile header cannot crash the reader.
 fn be_u32(data: &[u8], off: usize) -> u32 {
-    let Some(end) = off.checked_add(4) else {
-        return 0;
-    };
     let mut b = [0u8; 4];
-    if let Some(s) = data.get(off..end) {
+    // `get(off..).get(..4)` never overflows and yields None (→ 0) when the
+    // 4-byte window falls outside the header.
+    if let Some(s) = data.get(off..).and_then(|s| s.get(..4)) {
         b.copy_from_slice(s);
     }
     u32::from_be_bytes(b)
@@ -174,6 +177,176 @@ fn seek_within(current: u64, size: u64, pos: SeekFrom) -> u64 {
             }
         }
     }
+}
+
+const SPARSEBUNDLE_TYPE: &str = "com.apple.diskimage.sparsebundle";
+
+/// Reader for a `.sparsebundle` directory.
+///
+/// `Info.plist` gives the band size and total virtual size; the `bands/`
+/// directory holds band files named by lowercase-hex band index. A missing
+/// band file (or bytes past a short band file's end) reads back as zeros.
+pub struct SparseBundleReader {
+    bands_dir: PathBuf,
+    band_size: u64,
+    virtual_size: u64,
+    position: u64,
+}
+
+impl SparseBundleReader {
+    /// Open a `.sparsebundle` directory, parsing and validating `Info.plist`.
+    pub fn open(dir: &Path) -> Result<Self, DmgError> {
+        let info_path = dir.join("Info.plist");
+        let xml = match std::fs::read_to_string(&info_path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(DmgError::MissingInfoPlist)
+            }
+            Err(e) => return Err(DmgError::Io(e)),
+        };
+
+        let info = parse_info_plist(&xml)?;
+
+        match info.bundle_type.as_deref() {
+            Some(SPARSEBUNDLE_TYPE) => {}
+            other => {
+                return Err(DmgError::BadInfoPlist(format!(
+                    "diskimage-bundle-type is {other:?}, expected {SPARSEBUNDLE_TYPE:?}"
+                )))
+            }
+        }
+
+        let band_size = info
+            .band_size
+            .ok_or_else(|| DmgError::BadInfoPlist("missing band-size key".into()))?;
+        if band_size == 0 {
+            return Err(DmgError::BadInfoPlist(
+                "band-size is 0 (would divide by zero)".into(),
+            ));
+        }
+        let virtual_size = info
+            .size
+            .ok_or_else(|| DmgError::BadInfoPlist("missing size key".into()))?;
+
+        Ok(Self {
+            bands_dir: dir.join("bands"),
+            band_size,
+            virtual_size,
+            position: 0,
+        })
+    }
+
+    /// Total virtual disk size in bytes (the plist `size` key).
+    pub fn virtual_disk_size(&self) -> u64 {
+        self.virtual_size
+    }
+}
+
+impl Read for SparseBundleReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() || self.position >= self.virtual_size {
+            return Ok(0);
+        }
+        let band = self.position / self.band_size;
+        let off = self.position % self.band_size;
+        let band_remaining = self.band_size - off;
+        let disk_remaining = self.virtual_size - self.position;
+        let to_read = (buf.len() as u64).min(band_remaining).min(disk_remaining) as usize;
+
+        let path = self.bands_dir.join(format!("{band:x}"));
+        match std::fs::File::open(&path) {
+            Ok(mut f) => {
+                let flen = f.seek(SeekFrom::End(0))?;
+                if off >= flen {
+                    buf[..to_read].fill(0);
+                } else {
+                    let avail = (flen - off).min(to_read as u64) as usize;
+                    f.seek(SeekFrom::Start(off))?;
+                    f.read_exact(&mut buf[..avail])?;
+                    if avail < to_read {
+                        buf[avail..to_read].fill(0);
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => buf[..to_read].fill(0),
+            Err(e) => return Err(e),
+        }
+
+        self.position += to_read as u64;
+        Ok(to_read)
+    }
+}
+
+impl Seek for SparseBundleReader {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.position = seek_within(self.position, self.virtual_size, pos);
+        Ok(self.position)
+    }
+}
+
+/// The three `Info.plist` fields the reader needs.
+struct BundleInfo {
+    band_size: Option<u64>,
+    size: Option<u64>,
+    bundle_type: Option<String>,
+}
+
+/// Parse the `.sparsebundle` `Info.plist`, extracting `band-size`, `size`, and
+/// `diskimage-bundle-type`. Any non-integer value under a size key is a loud error.
+fn parse_info_plist(xml: &str) -> Result<BundleInfo, DmgError> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+
+    let mut band_size = None;
+    let mut size = None;
+    let mut bundle_type = None;
+    let mut current_key: Option<String> = None;
+    let mut elem: Option<Vec<u8>> = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => elem = Some(e.name().as_ref().to_vec()),
+            Ok(Event::Text(e)) => {
+                let text = e.unescape().unwrap_or_default();
+                let t = text.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                match elem.as_deref() {
+                    Some(b"key") => current_key = Some(t.to_string()),
+                    Some(b"integer") => {
+                        let key = current_key.as_deref();
+                        if key == Some("band-size") || key == Some("size") {
+                            let v: u64 = t.parse().map_err(|_| {
+                                DmgError::BadInfoPlist(format!(
+                                    "non-integer value {t:?} for key {key:?}"
+                                ))
+                            })?;
+                            if key == Some("band-size") {
+                                band_size = Some(v);
+                            } else {
+                                size = Some(v);
+                            }
+                        }
+                    }
+                    Some(b"string") if current_key.as_deref() == Some("diskimage-bundle-type") => {
+                        bundle_type = Some(t.to_string());
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(_)) => elem = None,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(DmgError::BadInfoPlist(e.to_string())),
+            _ => {}
+        }
+    }
+
+    Ok(BundleInfo {
+        band_size,
+        size,
+        bundle_type,
+    })
 }
 
 #[cfg(test)]
@@ -340,6 +513,34 @@ mod sparseimage_tests {
         r.read_exact(&mut buf).unwrap();
         assert!(buf.iter().all(|&b| b == 0));
     }
+
+    #[test]
+    fn truncated_physical_band_tail_reads_zeros() {
+        // One allocated band, but the file is truncated mid-band: the present
+        // half reads real bytes, the missing tail reads zeros.
+        let f = build(2, 2, &[1], &[vec![0xAAu8; 1024]]);
+        let mut f = f;
+        f.truncate(HDR + 512);
+        let mut r = SparseImageReader::open(Cursor::new(f)).unwrap();
+        let mut buf = [0u8; 1024];
+        r.read_exact(&mut buf).unwrap();
+        assert!(buf[..512].iter().all(|&b| b == 0xAA));
+        assert!(buf[512..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn band_offset_overflow_errors() {
+        // Huge sectors_per_band + a huge physical band number overflow the u64
+        // file offset. open() still succeeds (num_bands=1); the read errors loudly.
+        let mut f = vec![0u8; HDR];
+        f[0..4].copy_from_slice(&0x7370_7273u32.to_be_bytes());
+        f[8..12].copy_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // sectors_per_band
+        f[16..20].copy_from_slice(&1u32.to_be_bytes()); // total_sectors = 1
+        f[0x40..0x44].copy_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // phys band
+        let mut r = SparseImageReader::open(Cursor::new(f)).unwrap();
+        let mut buf = [0u8; 16];
+        assert!(r.read(&mut buf).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -365,30 +566,39 @@ mod sparsebundle_tests {
     }
 
     fn plist(band_size: Option<u64>, size: Option<u64>, bundle_type: Option<&str>) -> String {
+        use std::fmt::Write as _;
         let mut body = String::from(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n",
         );
         if let Some(t) = bundle_type {
-            body.push_str(&format!(
-                "  <key>diskimage-bundle-type</key><string>{t}</string>\n"
-            ));
+            let _ = writeln!(
+                body,
+                "  <key>diskimage-bundle-type</key><string>{t}</string>"
+            );
         }
         if let Some(b) = band_size {
-            body.push_str(&format!("  <key>band-size</key><integer>{b}</integer>\n"));
+            let _ = writeln!(body, "  <key>band-size</key><integer>{b}</integer>");
         }
         if let Some(s) = size {
-            body.push_str(&format!("  <key>size</key><integer>{s}</integer>\n"));
+            let _ = writeln!(body, "  <key>size</key><integer>{s}</integer>");
         }
         body.push_str("</dict>\n</plist>\n");
         body
     }
 
+    /// A realistic Info.plist, including keys the reader ignores (a non-target
+    /// `<string>` and `<integer>`) plus an escaped whitespace-only value that is
+    /// skipped — mirrors what `hdiutil` writes.
     fn valid_plist() -> String {
-        plist(
-            Some(1024),
-            Some(3072),
-            Some("com.apple.diskimage.sparsebundle"),
-        )
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n\
+         \t<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n\
+         \t<key>band-size</key><integer>1024</integer>\n\
+         \t<key>bundle-backingstore-version</key><integer>1</integer>\n\
+         \t<key>diskimage-bundle-type</key><string>com.apple.diskimage.sparsebundle</string>\n\
+         \t<key>pad</key><string>&#32;</string>\n\
+         \t<key>size</key><integer>3072</integer>\n\
+         </dict>\n</plist>\n"
+            .to_string()
     }
 
     /// band-size 1024, size 3072 (3 bands): band 0 present (0xAA, `H+` magic),
@@ -563,5 +773,51 @@ mod sparsebundle_tests {
         let dir = valid_bundle();
         let mut r = SparseBundleReader::open(dir.path()).unwrap();
         assert_eq!(r.read(&mut []).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_wholly_past_short_band_reads_zeros() {
+        // band 2 is 512 bytes; read starting at offset 512 within it (virtual
+        // 2560) is entirely past the file's end → zeros.
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        r.seek(SeekFrom::Start(2560)).unwrap();
+        let mut buf = [0xFFu8; 512];
+        r.read_exact(&mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn bands_path_that_is_a_file_errors_on_read() {
+        // `bands` is a regular file, so opening `bands/0` fails with a
+        // not-NotFound error (ENOTDIR) — surfaced loudly, not swallowed to zeros.
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("Info.plist"), valid_plist()).unwrap();
+        fs::write(dir.path().join("bands"), b"not a directory").unwrap();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        let mut buf = [0u8; 16];
+        assert!(r.read(&mut buf).is_err());
+    }
+
+    #[test]
+    fn info_plist_that_is_a_directory_is_io_error() {
+        // Info.plist exists but is a directory → a read error that is not
+        // NotFound → surfaced as DmgError::Io, distinct from MissingInfoPlist.
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("Info.plist")).unwrap();
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn mismatched_xml_tags_error() {
+        // quick-xml's end-name check rejects the mismatched close tag.
+        let dir = bundle("<plist version=\"1.0\">\n<dict></nope>\n</plist>\n", &[]);
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::BadInfoPlist(_))
+        ));
     }
 }
