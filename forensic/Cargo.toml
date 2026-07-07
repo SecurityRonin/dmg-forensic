@@ -1,0 +1,19 @@
+[package]
+name = "dmg-forensic"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors = ["Albert Hui <albert@securityronin.com>"]
+description = "Forensic Apple Disk Image (DMG/UDIF) anomaly auditor: surfaces koly-trailer signature, version, and out-of-bounds structural anomalies as graded forensicnomicon findings."
+readme = "../README.md"
+homepage = "https://github.com/SecurityRonin/dmg-forensic"
+keywords = ["dmg", "forensics", "dfir", "udif", "tamper"]
+categories = ["filesystem", "parser-implementations"]
+
+[dependencies]
+forensicnomicon = { workspace = true }
+
+[lints]
+workspace = true
