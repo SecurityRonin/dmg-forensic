@@ -25,7 +25,7 @@ for a in dmg_forensic::audit_path(Path::new("evidence.dmg"))? {
 
 ## Two crates
 
-- **`dmg-core`** (imported as `dmg`) — the reader. `DmgReader` over any `Read + Seek`: locates the 512-byte `koly` trailer, parses the embedded XML plist block table (`blkx`/`mish`), and serves the virtual sector stream through `Read + Seek`, decompressing on demand. Every codec `hdiutil` emits — **ADC, zlib, bzip2, LZFSE, LZMA** — all pure Rust, no C bindings, fuzzed against malformed input.
+- **`dmg-core`** (imported as `dmg`) — the reader. `DmgReader` over any `Read + Seek`: locates the 512-byte `koly` trailer, parses the embedded XML plist block table (`blkx`/`mish`), and serves the virtual sector stream through `Read + Seek`, decompressing on demand. Every codec `hdiutil` emits — **ADC, zlib, bzip2, LZFSE, LZMA** — all pure Rust, no C bindings, fuzzed against malformed input. Also reads Apple **sparse images** — `SparseImageReader` (`.sparseimage`, `sprs`) and `SparseBundleReader` (`.sparsebundle`, the band-file bundle Sumuri RECON and Time Machine produce) — behind the same `Read + Seek` virtual-disk interface.
 - **`dmg-forensic`** — the analyzer. `audit_path` / `audit_reader` / `audit` parse the raw koly trailer (not the reader's normalized view) and emit graded `forensicnomicon` findings.
 
 ```toml

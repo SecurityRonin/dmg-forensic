@@ -108,9 +108,11 @@ size 3072, `diskimage-bundle-type = com.apple.diskimage.sparsebundle`) plus a
 
 The env-gated `hdiutil_*_matches_flat_oracle` tests additionally mint **real**
 sparse images (`hdiutil create -type SPARSE|SPARSEBUNDLE`), flatten them with
-`hdiutil convert … -format UDTO`, and assert a full-image SHA-256 match — tier-1
-validation against Apple's own tool. Those artifacts live in `/tmp` and are never
-committed.
+`hdiutil convert … -format UDTO`, and assert a full-image SHA-256 match — **tier-2**
+validation: the image is self-minted (we chose the scenario) and the oracle
+(`hdiutil convert`) shares hdiutil's codebase with the minter, so it cross-checks
+our reader against hdiutil but cannot vouch for the real-world quirks a captured
+image might carry. Those artifacts live in `/tmp` and are never committed.
 
 ## Regenerating
 

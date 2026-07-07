@@ -17,7 +17,7 @@ The UDIF container and its `koly` trailer are a reverse-engineered Apple format;
 `hdiutil`, Apple's own tooling. Provenance and hashes for every committed fixture
 are in `core/tests/data/README.md`.
 
-## Reader codec decode — tier 1 / tier 2
+## Reader codec decode — tier 2
 
 `dmg-core` decodes each UDIF block codec against a real `hdiutil`-made DMG, with
 `hdiutil` (a different codebase) as the independent oracle: ADC, zlib (UDZO),
@@ -25,7 +25,22 @@ bzip2 (UDBZ), LZFSE (ULFO), and LZMA (ULMO). A byte-match between the pure-Rust
 decoder and `hdiutil`'s output is genuine cross-tool agreement. Tests:
 `core/tests/real_images.rs`.
 
-## Analyzer koly audit — specificity (tier 1/2) + sensitivity (tier 3)
+## Sparse image readers — tier 2
+
+`SparseImageReader` (`.sparseimage`, `sprs` band table) and `SparseBundleReader`
+(`.sparsebundle`, `Info.plist` + hex-named band files) are validated against a
+**self-minted** `hdiutil` image flattened by `hdiutil convert -format UDTO`, with a
+**full-image SHA-256** match asserted (`core/tests/sparse_images.rs`, env-gated on a
+macOS host). This is **tier 2, not tier 1**: the image is self-minted (we chose the
+scenario) and the oracle shares hdiutil's codebase with the minter, so it proves the
+reader agrees with hdiutil — not that it handles the real-world quirks a captured
+acquisition (e.g. a Sumuri RECON image) might carry. The full-image SHA is the load-
+bearing check: it caught a band-table direction error that per-offset spot-checks
+passed (the `sprs` table is indexed by physical slot, value = virtual band + 1).
+Committed synthetic fixtures specify the parse behaviour for CI; a fuzz target
+(`fuzz_sparse`) asserts the header parser never panics on arbitrary bytes.
+
+## Analyzer koly audit — specificity (tier 2) + sensitivity (tier 3)
 
 `dmg-forensic` parses the koly trailer and grades:
 
@@ -37,7 +52,7 @@ decoder and `hdiutil`'s output is genuine cross-tool agreement. Tests:
 | `DMG-KOLY-XML-OUT-OF-BOUNDS` | XML block-table offset+length runs past the file end |
 | `DMG-KOLY-TRAILER-TOO-SMALL` | file is smaller than a 512-byte koly trailer |
 
-- **Specificity (tier 1/2):** a real `hdiutil`-made DMG audits **clean** — zero
+- **Specificity (tier 2):** a self-minted `hdiutil` DMG audits **clean** — zero
   anomalies (`a_real_apple_made_dmg_audits_clean`). The real artifact is the
   independent oracle for "a well-formed DMG produces no false positives".
 - **Sensitivity (tier 3, by nature):** the out-of-bounds and bad-signature rules

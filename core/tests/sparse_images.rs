@@ -4,7 +4,7 @@
 //!  * **Committed synthetic fixtures** (`synthetic.sparseimage`,
 //!    `synthetic.sparsebundle/`) — small, deterministic, run on every CI. They
 //!    specify the parse/read behaviour; provenance is in `tests/data/README.md`.
-//!  * **Real `hdiutil` oracle** (tier-1/2, env-gated) — mints real sparse images
+//!  * **Real `hdiutil` oracle** (tier-2, env-gated) — mints real sparse images
 //!    with Apple's `hdiutil`, builds a flat raw oracle with
 //!    `hdiutil convert … -format UDTO`, and asserts the reader materialises a
 //!    byte-identical image (full SHA-256 match). Skips cleanly when `hdiutil`
@@ -101,7 +101,7 @@ fn synthetic_sparsebundle_partial_band_tail_is_zeros() {
     assert!(buf[512..].iter().all(|&b| b == 0));
 }
 
-// ── Real hdiutil oracle (tier-1/2, env-gated) ──────────────────────────────
+// ── Real hdiutil oracle (tier-2, env-gated) ──────────────────────────────
 
 fn hdiutil_ok() -> bool {
     Command::new("hdiutil")
