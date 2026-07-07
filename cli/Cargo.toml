@@ -1,0 +1,22 @@
+[package]
+name = "dmg-forensic-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors = ["Albert Hui <albert@securityronin.com>"]
+description = "dmg4n6: command-line Apple Disk Image (DMG) info + forensic koly-trailer auditor over dmg-core / dmg-forensic."
+# Debug/standalone CLI — the fleet end-user CLI is issen/disk4n6. Not published.
+publish = false
+
+[[bin]]
+name = "dmg4n6"
+path = "src/main.rs"
+
+[dependencies]
+dmg-core = { workspace = true }
+dmg-forensic = { path = "../forensic", version = "0.1.0" }
+
+[lints]
+workspace = true
