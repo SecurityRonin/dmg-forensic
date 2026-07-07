@@ -359,34 +359,40 @@ mod sparseimage_tests {
 
     /// Build a synthetic `.sparseimage` in memory.
     ///
-    /// `spb` = sectors per band; `table` maps virtual band → physical band
-    /// (1-based, 0 = hole); `phys[p-1]` is the full `band_size`-byte content of
-    /// physical band `p`, stored sequentially after the 4096-byte header.
-    fn build(spb: u32, total_sectors: u32, table: &[u32], phys: &[Vec<u8>]) -> Vec<u8> {
+    /// `spb` = sectors per band. `bands[v]` is virtual band `v`'s content
+    /// (`None` = unallocated hole). Allocated bands are stored in ascending
+    /// virtual order after the 4096-byte header; the band table at 0x40 is
+    /// indexed by physical slot and holds `virtual_band + 1` for each slot
+    /// (0 = unused) — the layout `hdiutil` writes, confirmed against its UDTO
+    /// raw oracle in `tests/sparse_images.rs`.
+    fn build(spb: u32, bands: &[Option<Vec<u8>>]) -> Vec<u8> {
         let band_size = spb as usize * 512;
+        let total_sectors = (bands.len() * spb as usize) as u32;
         let mut file = vec![0u8; HDR];
         file[0..4].copy_from_slice(&0x7370_7273u32.to_be_bytes()); // "sprs"
         file[4..8].copy_from_slice(&3u32.to_be_bytes()); // version
         file[8..12].copy_from_slice(&spb.to_be_bytes()); // sectors_per_band
         file[16..20].copy_from_slice(&total_sectors.to_be_bytes()); // total_sectors
-        for (i, &e) in table.iter().enumerate() {
-            let o = 0x40 + i * 4;
-            file[o..o + 4].copy_from_slice(&e.to_be_bytes());
-        }
-        for b in phys {
-            assert_eq!(b.len(), band_size, "phys band must be band_size");
-            file.extend_from_slice(b);
+        let mut slot = 0usize;
+        for (v, b) in bands.iter().enumerate() {
+            if let Some(content) = b {
+                assert_eq!(content.len(), band_size, "band must be band_size");
+                let o = 0x40 + slot * 4;
+                file[o..o + 4].copy_from_slice(&((v as u32) + 1).to_be_bytes());
+                file.extend_from_slice(content);
+                slot += 1;
+            }
         }
         file
     }
 
     /// `band_size` = 2×512 = 1024; 3 virtual bands; virtual band 1 is a hole.
-    /// v0→phys1 (starts with the HFS+ `H+` magic), v2→phys2 (0xCC filled).
+    /// v0 starts with the HFS+ `H+` magic, v2 is 0xCC filled.
     fn sample() -> Vec<u8> {
-        let mut band0 = vec![0xAAu8; 1024];
-        band0[0..4].copy_from_slice(&[0x48, 0x2b, 0x00, 0x04]);
-        let band2 = vec![0xCCu8; 1024];
-        build(2, 6, &[1, 0, 2], &[band0, band2])
+        let mut b0 = vec![0xAAu8; 1024];
+        b0[0..4].copy_from_slice(&[0x48, 0x2b, 0x00, 0x04]);
+        let b2 = vec![0xCCu8; 1024];
+        build(2, &[Some(b0), None, Some(b2)])
     }
 
     #[test]
@@ -418,12 +424,13 @@ mod sparseimage_tests {
     }
 
     #[test]
-    fn band_table_overrun_is_bad_header() {
-        // spb=1 → num_bands = total_sectors; 5000 > (4096-64)/4 = 1008.
-        let mut f = vec![0u8; HDR + 512];
+    fn too_many_physical_bands_is_bad_header() {
+        // band_size=512 (spb=1); 1009 physical bands overrun the (4096-64)/4 =
+        // 1008-entry single-header band table → loud error, not silent truncation.
+        let mut f = vec![0u8; HDR + 1009 * 512];
         f[0..4].copy_from_slice(&0x7370_7273u32.to_be_bytes());
-        f[8..12].copy_from_slice(&1u32.to_be_bytes());
-        f[16..20].copy_from_slice(&5000u32.to_be_bytes());
+        f[8..12].copy_from_slice(&1u32.to_be_bytes()); // sectors_per_band = 1
+        f[16..20].copy_from_slice(&1009u32.to_be_bytes());
         assert!(matches!(
             SparseImageReader::open(Cursor::new(f)),
             Err(DmgError::BadSparseHeader(_))
@@ -504,11 +511,11 @@ mod sparseimage_tests {
     }
 
     #[test]
-    fn physical_band_past_file_reads_zeros() {
-        // Table points v0 → physical band 99, far past the file → graceful zeros.
-        let band0 = vec![0xAAu8; 1024];
-        let f = build(2, 2, &[99], &[band0]);
+    fn unmapped_virtual_band_reads_zeros() {
+        // Only virtual band 0 is allocated; bands 1 and 2 have no slot → zeros.
+        let f = build(2, &[Some(vec![0xAAu8; 1024]), None, None]);
         let mut r = SparseImageReader::open(Cursor::new(f)).unwrap();
+        r.seek(SeekFrom::Start(2048)).unwrap();
         let mut buf = [0xFFu8; 512];
         r.read_exact(&mut buf).unwrap();
         assert!(buf.iter().all(|&b| b == 0));
@@ -518,8 +525,7 @@ mod sparseimage_tests {
     fn truncated_physical_band_tail_reads_zeros() {
         // One allocated band, but the file is truncated mid-band: the present
         // half reads real bytes, the missing tail reads zeros.
-        let f = build(2, 2, &[1], &[vec![0xAAu8; 1024]]);
-        let mut f = f;
+        let mut f = build(2, &[Some(vec![0xAAu8; 1024])]);
         f.truncate(HDR + 512);
         let mut r = SparseImageReader::open(Cursor::new(f)).unwrap();
         let mut buf = [0u8; 1024];
@@ -529,17 +535,16 @@ mod sparseimage_tests {
     }
 
     #[test]
-    fn band_offset_overflow_errors() {
-        // Huge sectors_per_band + a huge physical band number overflow the u64
-        // file offset. open() still succeeds (num_bands=1); the read errors loudly.
-        let mut f = vec![0u8; HDR];
-        f[0..4].copy_from_slice(&0x7370_7273u32.to_be_bytes());
-        f[8..12].copy_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // sectors_per_band
-        f[16..20].copy_from_slice(&1u32.to_be_bytes()); // total_sectors = 1
-        f[0x40..0x44].copy_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // phys band
+    fn read_starting_in_truncated_region_reads_zeros() {
+        // Seek past the present bytes of a truncated band: the band's file offset
+        // is wholly past EOF → zeros (never a short-read panic).
+        let mut f = build(2, &[Some(vec![0xAAu8; 1024])]);
+        f.truncate(HDR + 512);
         let mut r = SparseImageReader::open(Cursor::new(f)).unwrap();
-        let mut buf = [0u8; 16];
-        assert!(r.read(&mut buf).is_err());
+        r.seek(SeekFrom::Start(600)).unwrap();
+        let mut buf = [0xFFu8; 8];
+        r.read_exact(&mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0));
     }
 }
 
