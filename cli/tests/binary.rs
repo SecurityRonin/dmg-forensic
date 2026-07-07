@@ -68,7 +68,7 @@ impl Write for FailWriter {
 fn a_write_error_is_propagated_not_swallowed() {
     let owned: Vec<String> = ["dmg4n6", "info", DMG]
         .iter()
-        .map(|s| s.to_string())
+        .map(|s| (*s).to_string())
         .collect();
     let mut w = FailWriter;
     assert!(dispatch(&owned, &mut w).is_err());
