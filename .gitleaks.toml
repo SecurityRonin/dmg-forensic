@@ -1,0 +1,20 @@
+# gitleaks configuration for dmg-forensic.
+# Extends the default ruleset and allowlists known false positives specific to a
+# forensic repo: a CI cache-key string and the binary disk-image test fixtures
+# (whose random-looking bytes trip entropy rules but are never secrets).
+title = "dmg-forensic"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known false positives (build metadata + binary forensic fixtures)"
+regexes = [
+  '''corpus-dmg-v1''',            # a GitHub Actions cache key (in ci.yml history), not a secret
+]
+paths = [
+  '''core/tests/data/.*\.dmg$''',
+  '''core/tests/data/.*\.sparseimage$''',
+  '''core/tests/data/.*\.bin$''',
+  '''core/tests/data/.*sparsebundle.*''',
+]
