@@ -6,6 +6,7 @@
 //! read back as zeros, so the reader materialises a flat image identical to
 //! `hdiutil convert … -format UDTO`.
 
+use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -34,17 +35,20 @@ fn be_u32(data: &[u8], off: usize) -> u32 {
 
 /// Reader for a single-file `.sparseimage` (`sprs` magic).
 ///
-/// The 4096-byte header carries a band table mapping each virtual band to a
-/// 1-based physical band number (0 = unallocated hole). Physical bands are
-/// stored sequentially after the header.
+/// The 4096-byte header carries a band table *indexed by physical slot* (0-based
+/// position of a stored band after the header); each entry is `virtual_band + 1`,
+/// or 0 for an unused slot. Inverting it gives virtual band → physical slot; a
+/// virtual band with no slot is an unallocated hole that reads back as zeros.
+/// (This inverse-map layout was confirmed byte-identical to `hdiutil`'s UDTO raw
+/// oracle — see `tests/sparse_images.rs`.)
 pub struct SparseImageReader<R: Read + Seek> {
     inner: R,
     band_size: u64,
     virtual_size: u64,
-    /// Total file size, used to reject/zero-fill out-of-bounds band references.
+    /// Total file size, used to zero-fill reads into a truncated band.
     file_size: u64,
-    /// Virtual band → physical band number (1-based; 0 = hole).
-    table: Vec<u32>,
+    /// Virtual band → physical slot (0-based position after the header).
+    band_slot: HashMap<u64, u64>,
     position: u64,
 }
 
@@ -76,22 +80,29 @@ impl<R: Read + Seek> SparseImageReader<R> {
         let total_sectors = u64::from(be_u32(&header, 0x10));
         let virtual_size = total_sectors.saturating_mul(SECTOR);
 
-        // num_virtual_bands = ceil(total_sectors / sectors_per_band).
-        let num_bands = total_sectors.div_ceil(sectors_per_band);
+        // Physical band slots stored after the header. `ceil` so a truncated
+        // trailing band is still mapped; `band_size >= 512` rules out div-by-0.
+        let phys_region = file_size.saturating_sub(SPARSE_HEADER_SIZE);
+        let nphys = phys_region.div_ceil(band_size);
 
-        // The band table lives inside the 4096-byte header at 0x40. A count that
-        // would overrun the header is rejected — this is both the structural
-        // bound and the allocation-bomb guard (max (4096-64)/4 = 1008 entries).
-        let max_bands = (SPARSE_HEADER_SIZE as usize - BAND_TABLE_OFFSET) / 4;
-        if num_bands > max_bands as u64 {
+        // The slot-indexed table lives inside the 4096-byte header at 0x40. More
+        // slots than fit there would need a multi-node table we do not support —
+        // reject loudly rather than silently drop bands. This is also the
+        // allocation-bomb guard (the map holds at most 1008 entries).
+        let max_slots = (SPARSE_HEADER_SIZE as usize - BAND_TABLE_OFFSET) / 4;
+        if nphys > max_slots as u64 {
             return Err(DmgError::BadSparseHeader(format!(
-                "band table of {num_bands} entries overruns the 4096-byte header (max {max_bands})"
+                "{nphys} physical bands exceed the single 4096-byte band table (max {max_slots}); multi-node tables unsupported"
             )));
         }
-        let num_bands = num_bands as usize;
-        let mut table = Vec::with_capacity(num_bands);
-        for i in 0..num_bands {
-            table.push(be_u32(&header, BAND_TABLE_OFFSET + i * 4));
+
+        // Invert the slot → (virtual_band + 1) table into virtual band → slot.
+        let mut band_slot = HashMap::new();
+        for slot in 0..nphys {
+            let v = be_u32(&header, BAND_TABLE_OFFSET + slot as usize * 4);
+            if v != 0 {
+                band_slot.insert(u64::from(v) - 1, slot);
+            }
         }
 
         Ok(Self {
@@ -99,7 +110,7 @@ impl<R: Read + Seek> SparseImageReader<R> {
             band_size,
             virtual_size,
             file_size,
-            table,
+            band_slot,
             position: 0,
         })
     }
@@ -115,33 +126,30 @@ impl<R: Read + Seek> Read for SparseImageReader<R> {
         if buf.is_empty() || self.position >= self.virtual_size {
             return Ok(0);
         }
-        let vband = (self.position / self.band_size) as usize;
+        let vband = self.position / self.band_size;
         let off = self.position % self.band_size;
         let band_remaining = self.band_size - off;
         let disk_remaining = self.virtual_size - self.position;
         let to_read = (buf.len() as u64).min(band_remaining).min(disk_remaining) as usize;
 
-        // vband < table.len() holds by construction (num_bands = ceil), so the
-        // default only guards a future invariant break — treat as a hole.
-        let phys = self.table.get(vband).copied().unwrap_or(0);
-        if phys == 0 {
-            buf[..to_read].fill(0);
-        } else {
-            let file_off = (u64::from(phys) - 1)
-                .checked_mul(self.band_size)
-                .and_then(|v| v.checked_add(SPARSE_HEADER_SIZE))
-                .and_then(|v| v.checked_add(off))
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "sparse band offset overflow")
-                })?;
-            if file_off >= self.file_size {
-                buf[..to_read].fill(0);
-            } else {
-                let avail = (self.file_size - file_off).min(to_read as u64) as usize;
-                self.inner.seek(SeekFrom::Start(file_off))?;
-                self.inner.read_exact(&mut buf[..avail])?;
-                if avail < to_read {
-                    buf[avail..to_read].fill(0);
+        match self.band_slot.get(&vband) {
+            // No physical slot for this virtual band → unallocated hole.
+            None => buf[..to_read].fill(0),
+            Some(&slot) => {
+                // slot < 1008 and band_size <= u32::MAX*512, so the offset stays
+                // well within u64; saturate anyway to stay panic-free.
+                let file_off = SPARSE_HEADER_SIZE
+                    .saturating_add(slot.saturating_mul(self.band_size))
+                    .saturating_add(off);
+                if file_off >= self.file_size {
+                    buf[..to_read].fill(0);
+                } else {
+                    let avail = (self.file_size - file_off).min(to_read as u64) as usize;
+                    self.inner.seek(SeekFrom::Start(file_off))?;
+                    self.inner.read_exact(&mut buf[..avail])?;
+                    if avail < to_read {
+                        buf[avail..to_read].fill(0);
+                    }
                 }
             }
         }
