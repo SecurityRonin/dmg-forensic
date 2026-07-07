@@ -2,7 +2,7 @@
 
 use dmg::DmgReader;
 use libfuzzer_sys::fuzz_target;
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 // DmgReader<R> is generic over R: Read + Seek — use Cursor for in-memory fuzzing.
 // Read the whole (capped) virtual disk so every block's codec — zero/raw/ADC/
