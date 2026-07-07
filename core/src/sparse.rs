@@ -341,3 +341,227 @@ mod sparseimage_tests {
         assert!(buf.iter().all(|&b| b == 0));
     }
 }
+
+#[cfg(test)]
+mod sparsebundle_tests {
+    use super::SparseBundleReader;
+    use crate::DmgError;
+    use std::fs;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use tempfile::TempDir;
+
+    /// Assemble a `<name>.sparsebundle` directory with the given Info.plist body
+    /// and band files. `bands` are `(index, bytes)`; omitted indices are holes.
+    fn bundle(plist: &str, bands: &[(u64, Vec<u8>)]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("Info.plist"), plist).unwrap();
+        let bands_dir = dir.path().join("bands");
+        fs::create_dir(&bands_dir).unwrap();
+        for (idx, bytes) in bands {
+            let mut f = fs::File::create(bands_dir.join(format!("{idx:x}"))).unwrap();
+            f.write_all(bytes).unwrap();
+        }
+        dir
+    }
+
+    fn plist(band_size: Option<u64>, size: Option<u64>, bundle_type: Option<&str>) -> String {
+        let mut body = String::from(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n",
+        );
+        if let Some(t) = bundle_type {
+            body.push_str(&format!(
+                "  <key>diskimage-bundle-type</key><string>{t}</string>\n"
+            ));
+        }
+        if let Some(b) = band_size {
+            body.push_str(&format!("  <key>band-size</key><integer>{b}</integer>\n"));
+        }
+        if let Some(s) = size {
+            body.push_str(&format!("  <key>size</key><integer>{s}</integer>\n"));
+        }
+        body.push_str("</dict>\n</plist>\n");
+        body
+    }
+
+    fn valid_plist() -> String {
+        plist(
+            Some(1024),
+            Some(3072),
+            Some("com.apple.diskimage.sparsebundle"),
+        )
+    }
+
+    /// band-size 1024, size 3072 (3 bands): band 0 present (0xAA, `H+` magic),
+    /// band 1 a hole (missing file), band 2 present but half-length (0xCC).
+    fn valid_bundle() -> TempDir {
+        let mut b0 = vec![0xAAu8; 1024];
+        b0[0..4].copy_from_slice(&[0x48, 0x2b, 0x00, 0x04]);
+        let b2 = vec![0xCCu8; 512];
+        bundle(&valid_plist(), &[(0, b0), (2, b2)])
+    }
+
+    #[test]
+    fn missing_info_plist_errors() {
+        let dir = TempDir::new().unwrap();
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::MissingInfoPlist)
+        ));
+    }
+
+    #[test]
+    fn malformed_plist_errors() {
+        let dir = bundle("<plist><dict><key>oops", &[]);
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::BadInfoPlist(_))
+        ));
+    }
+
+    #[test]
+    fn wrong_bundle_type_errors() {
+        let dir = bundle(
+            &plist(Some(1024), Some(3072), Some("com.apple.diskimage.sparse")),
+            &[],
+        );
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::BadInfoPlist(_))
+        ));
+    }
+
+    #[test]
+    fn missing_band_size_errors() {
+        let dir = bundle(
+            &plist(None, Some(3072), Some("com.apple.diskimage.sparsebundle")),
+            &[],
+        );
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::BadInfoPlist(_))
+        ));
+    }
+
+    #[test]
+    fn zero_band_size_errors() {
+        let dir = bundle(
+            &plist(
+                Some(0),
+                Some(3072),
+                Some("com.apple.diskimage.sparsebundle"),
+            ),
+            &[],
+        );
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::BadInfoPlist(_))
+        ));
+    }
+
+    #[test]
+    fn missing_size_errors() {
+        let dir = bundle(
+            &plist(Some(1024), None, Some("com.apple.diskimage.sparsebundle")),
+            &[],
+        );
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::BadInfoPlist(_))
+        ));
+    }
+
+    #[test]
+    fn non_integer_band_size_errors() {
+        let xml = "<plist version=\"1.0\">\n<dict>\n\
+                   <key>diskimage-bundle-type</key><string>com.apple.diskimage.sparsebundle</string>\n\
+                   <key>band-size</key><integer>notanumber</integer>\n\
+                   <key>size</key><integer>3072</integer>\n</dict>\n</plist>\n";
+        let dir = bundle(xml, &[]);
+        assert!(matches!(
+            SparseBundleReader::open(dir.path()),
+            Err(DmgError::BadInfoPlist(_))
+        ));
+    }
+
+    #[test]
+    fn virtual_disk_size_matches_plist_size() {
+        let dir = valid_bundle();
+        let r = SparseBundleReader::open(dir.path()).unwrap();
+        assert_eq!(r.virtual_disk_size(), 3072);
+    }
+
+    #[test]
+    fn reads_present_band_magic() {
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        let mut buf = [0u8; 4];
+        r.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, [0x48, 0x2b, 0x00, 0x04]);
+    }
+
+    #[test]
+    fn missing_band_file_reads_zeros() {
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        r.seek(SeekFrom::Start(1024)).unwrap(); // band 1 = hole
+        let mut buf = [0xFFu8; 1024];
+        r.read_exact(&mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn partial_band_tail_reads_zeros() {
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        r.seek(SeekFrom::Start(2048)).unwrap(); // band 2 = 512 real bytes + 512 zeros
+        let mut buf = [0u8; 1024];
+        r.read_exact(&mut buf).unwrap();
+        assert!(buf[..512].iter().all(|&b| b == 0xCC));
+        assert!(buf[512..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn read_across_band_boundary() {
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        r.seek(SeekFrom::Start(1023)).unwrap();
+        let mut buf = [0xEEu8; 2];
+        r.read_exact(&mut buf).unwrap(); // band0 tail 0xAA, then band1 hole 0x00
+        assert_eq!(buf, [0xAA, 0x00]);
+    }
+
+    #[test]
+    fn seek_within_band_reads_offset() {
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        r.seek(SeekFrom::Start(500)).unwrap();
+        let mut buf = [0u8; 1];
+        r.read_exact(&mut buf).unwrap();
+        assert_eq!(buf[0], 0xAA);
+    }
+
+    #[test]
+    fn seek_from_end_and_current() {
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        assert_eq!(r.seek(SeekFrom::End(0)).unwrap(), 3072);
+        assert_eq!(r.seek(SeekFrom::End(-1024)).unwrap(), 2048);
+        assert_eq!(r.seek(SeekFrom::Current(-2048)).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_past_eof_returns_zero() {
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        r.seek(SeekFrom::Start(3072)).unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(r.read(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn empty_buffer_reads_zero() {
+        let dir = valid_bundle();
+        let mut r = SparseBundleReader::open(dir.path()).unwrap();
+        assert_eq!(r.read(&mut []).unwrap(), 0);
+    }
+}
