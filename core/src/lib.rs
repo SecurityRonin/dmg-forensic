@@ -13,6 +13,8 @@
 
 mod sparse;
 
+pub use sparse::SparseImageReader;
+
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
 use base64::Engine;
@@ -59,6 +61,14 @@ pub enum DmgError {
     Compression(String),
     #[error("unsupported compression type: {0:#010x}")]
     NotSupported(u32),
+    #[error("not a sparse image: bad sprs magic {0:#010x}")]
+    NotSparseImage(u32),
+    #[error("invalid sparse image header: {0}")]
+    BadSparseHeader(String),
+    #[error("sparsebundle Info.plist not found")]
+    MissingInfoPlist,
+    #[error("invalid sparsebundle Info.plist: {0}")]
+    BadInfoPlist(String),
 }
 
 /// One `BLKXRun` entry from a mish block.
