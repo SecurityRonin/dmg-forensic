@@ -471,7 +471,9 @@ fn parse_plist(xml: &str) -> Result<Vec<Partition>, DmgError> {
                 _ => {}
             },
             Ok(Event::Text(e)) => {
-                let text = e.unescape().unwrap_or_default();
+                let text = e
+                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
+                    .unwrap_or_default();
                 let trimmed = text.trim();
                 if e.is_empty() || trimmed.is_empty() {
                     continue;

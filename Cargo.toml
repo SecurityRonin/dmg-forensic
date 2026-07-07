@@ -17,7 +17,7 @@ dmg-core = { path = "core", version = "0.1.2" }
 forensicnomicon = "1"
 thiserror = "2"
 tempfile  = "3"
-quick-xml = "0.37"
+quick-xml = "0.41"
 base64    = "0.22"
 flate2    = "1"
 # Pure-Rust block codecs for UDIF compressed blocks (no C deps): bzip2 (UDBZ),

@@ -315,7 +315,9 @@ fn parse_info_plist(xml: &str) -> Result<BundleInfo, DmgError> {
         match reader.read_event() {
             Ok(Event::Start(e)) => elem = Some(e.name().as_ref().to_vec()),
             Ok(Event::Text(e)) => {
-                let text = e.unescape().unwrap_or_default();
+                let text = e
+                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
+                    .unwrap_or_default();
                 let t = text.trim();
                 if t.is_empty() {
                     continue;
