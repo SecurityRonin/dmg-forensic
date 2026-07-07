@@ -11,6 +11,8 @@
 //! LZFSE/ULFO (`0x80000007`), and LZMA/ULMO (`0x80000008`) — every codec
 //! `hdiutil` emits. All decoders are pure Rust (no C dependencies).
 
+mod sparse;
+
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
 use base64::Engine;
