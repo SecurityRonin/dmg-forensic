@@ -17,5 +17,5 @@ doc = false
 
 [dependencies]
 libfuzzer-sys = "0.4"
-dmg = { package = "dmg-core", path = "../dmg", default-features = false }
+dmg = { package = "dmg-core", path = "../core", default-features = false }
 tempfile = "3"

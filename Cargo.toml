@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["dmg"]
+members = ["core"]
 
 # Single source of truth for fields shared by every member (DRY): bump version /
 # MSRV / license here once; members inherit via `field.workspace = true`.
@@ -9,9 +9,12 @@ version = "0.1.2"
 edition = "2021"
 rust-version = "1.85"
 license = "Apache-2.0"
-repository = "https://github.com/SecurityRonin/dmg"
+repository = "https://github.com/SecurityRonin/dmg-forensic"
 
 [workspace.dependencies]
+# Fleet members (path within the workspace; registry version for publish).
+dmg-core = { path = "core", version = "0.1.2" }
+forensicnomicon = "1"
 thiserror = "2"
 tempfile  = "3"
 quick-xml = "0.37"
