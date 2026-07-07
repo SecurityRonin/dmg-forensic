@@ -117,9 +117,9 @@ impl AnomalyKind {
                 "koly trailer signature is 0x{found:08x}, not 'koly' (0x6b6f6c79); consistent \
                  with a non-UDIF file or an overwritten trailer"
             ),
-            AnomalyKind::VersionUnexpected { version } => format!(
-                "koly trailer version is {version}, not the documented 4"
-            ),
+            AnomalyKind::VersionUnexpected { version } => {
+                format!("koly trailer version is {version}, not the documented 4")
+            }
             AnomalyKind::DataForkOutOfBounds {
                 offset,
                 length,
@@ -247,16 +247,60 @@ fn be_u64(b: &[u8], off: usize) -> u64 {
 /// file's true length, so a large image never has to be read whole.
 #[must_use]
 pub fn audit_trailer(trailer: &[u8], file_len: u64) -> Vec<Anomaly> {
-    // RED stub: no checks yet.
-    let _ = (trailer, file_len, KOLY_MAGIC, KOLY_VERSION);
-    Vec::new()
+    let mut out = Vec::new();
+
+    if trailer.len() < KOLY_LEN {
+        out.push(Anomaly::new(AnomalyKind::TrailerTooSmall {
+            len: trailer.len(),
+        }));
+        return out;
+    }
+
+    // Signature is load-bearing: without it the remaining offsets are not koly
+    // fields at all, so a mismatch is reported alone.
+    let signature = be_u32(trailer, 0);
+    if signature != KOLY_MAGIC {
+        out.push(Anomaly::new(AnomalyKind::SignatureInvalid {
+            found: signature,
+        }));
+        return out;
+    }
+
+    let version = be_u32(trailer, 4);
+    if version != KOLY_VERSION {
+        out.push(Anomaly::new(AnomalyKind::VersionUnexpected { version }));
+    }
+
+    let df_offset = be_u64(trailer, 0x18);
+    let df_length = be_u64(trailer, 0x20);
+    if df_offset.saturating_add(df_length) > file_len {
+        out.push(Anomaly::new(AnomalyKind::DataForkOutOfBounds {
+            offset: df_offset,
+            length: df_length,
+            file_len,
+        }));
+    }
+
+    let xml_offset = be_u64(trailer, 0xd8);
+    let xml_length = be_u64(trailer, 0xe0);
+    if xml_offset.saturating_add(xml_length) > file_len {
+        out.push(Anomaly::new(AnomalyKind::XmlOutOfBounds {
+            offset: xml_offset,
+            length: xml_length,
+            file_len,
+        }));
+    }
+
+    out
 }
 
 /// Audit a whole DMG given as bytes (locates the koly trailer at the tail).
 #[must_use]
 pub fn audit(data: &[u8]) -> Vec<Anomaly> {
     if data.len() < KOLY_LEN {
-        return vec![Anomaly::new(AnomalyKind::TrailerTooSmall { len: data.len() })];
+        return vec![Anomaly::new(AnomalyKind::TrailerTooSmall {
+            len: data.len(),
+        })];
     }
     let trailer = &data[data.len() - KOLY_LEN..];
     audit_trailer(trailer, data.len() as u64)
