@@ -47,7 +47,33 @@ impl From<dmg::DmgError> for CliError {
 
 /// Dispatch a parsed argv to a subcommand, writing output to `out`.
 pub fn dispatch(args: &[String], out: &mut dyn Write) -> Result<(), CliError> {
-    // RED stub.
-    let _ = (args, out);
-    Err(CliError::Usage(USAGE.to_string()))
+    match (args.get(1).map(String::as_str), args.get(2)) {
+        (Some("info"), Some(path)) => info(path, out),
+        (Some("audit"), Some(path)) => audit(path, out),
+        _ => Err(CliError::Usage(USAGE.to_string())),
+    }
+}
+
+/// `info`: decode the image and print its virtual disk size.
+fn info(path: &str, out: &mut dyn Write) -> Result<(), CliError> {
+    let reader = dmg::DmgReader::open(std::fs::File::open(path)?)?;
+    writeln!(
+        out,
+        "virtual disk size: {} bytes",
+        reader.virtual_disk_size()
+    )?;
+    Ok(())
+}
+
+/// `audit`: run the koly-trailer audit and print each finding (or a clean message).
+fn audit(path: &str, out: &mut dyn Write) -> Result<(), CliError> {
+    let anomalies = dmg_forensic::audit_path(std::path::Path::new(path))?;
+    if anomalies.is_empty() {
+        writeln!(out, "no anomalies found")?;
+        return Ok(());
+    }
+    for a in &anomalies {
+        writeln!(out, "[{:?}] {}: {}", a.severity, a.code, a.note)?;
+    }
+    Ok(())
 }
