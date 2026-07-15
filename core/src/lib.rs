@@ -575,6 +575,8 @@ fn parse_mish(data: &[u8]) -> Result<Partition, DmgError> {
 
 #[cfg(feature = "vfs")]
 mod vfs;
+#[cfg(feature = "vfs")]
+pub use vfs::DmgSource;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
