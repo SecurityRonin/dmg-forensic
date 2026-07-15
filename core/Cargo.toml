@@ -18,6 +18,11 @@ exclude = ["tests/", "../fuzz/", ".github/"]
 name = "dmg"
 path = "src/lib.rs"
 
+[features]
+# Implement the forensic-vfs ImageSource contract so a decoded DMG composes
+# directly into the fleet VFS. Off by default (optional forensic-vfs dep).
+vfs = ["dep:forensic-vfs"]
+
 [dependencies]
 thiserror = { workspace = true }
 quick-xml = { workspace = true }
@@ -26,6 +31,7 @@ flate2    = { workspace = true }
 bzip2-rs   = { workspace = true }
 lzma-rs    = { workspace = true }
 lzfse_rust = { workspace = true }
+forensic-vfs = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile  = { workspace = true }

@@ -571,6 +571,11 @@ fn parse_mish(data: &[u8]) -> Result<Partition, DmgError> {
     })
 }
 
+// ── forensic-vfs integration ──────────────────────────────────────────────────
+
+#[cfg(feature = "vfs")]
+mod vfs;
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
