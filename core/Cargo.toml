@@ -31,7 +31,7 @@ flate2    = { workspace = true }
 bzip2-rs   = { workspace = true }
 lzma-rs    = { workspace = true }
 lzfse_rust = { workspace = true }
-forensic-vfs = { version = "0.1", optional = true }
+forensic-vfs = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile  = { workspace = true }
