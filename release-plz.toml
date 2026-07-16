@@ -1,0 +1,46 @@
+# release-plz owns crates.io publishing + changelogs + per-crate version bumps for
+# this workspace's library crates:
+#   dmg-core, dmg-forensic
+# It runs on pushes to main (see .github/workflows/release-plz.yml):
+#   - `release-pr`  opens a human-reviewed version-bump PR (conventional commits)
+#   - `release`     publishes any crate whose Cargo.toml version is ahead of
+#                   crates.io, in inter-crate dependency order, and tags it
+#
+# Members that do not publish (test/CLI/GUI/integration helpers) each carry a
+# release=false + publish=false override below, mirroring their Cargo.toml.
+
+[workspace]
+# Per-package git tags, e.g. `dmg-core-v0.1.1`. `v[0-9]*` binary triggers never
+# match these — see the fleet release standard.
+git_tag_enable = true
+git_release_enable = false
+changelog_update = true
+dependencies_update = false
+# Only prepare a release on a real change. release-plz's detection is file-based, so a
+# changelog-only "chore: release" commit otherwise re-triggers a release (the churn
+# loop). This allowlist makes feat/fix/perf/refactor/doc/revert the only triggers.
+release_commits = "^(feat|fix|perf|refactor|doc|revert)"
+
+[changelog]
+commit_parsers = [
+    { message = "^chore\\(release\\):", skip = true },
+    { message = "^chore: release", skip = true },
+    { message = "^feat", group = "added" },
+    { message = "^fix", group = "fixed" },
+    { message = "^perf", group = "performance" },
+    { message = "^refactor", group = "other" },
+    { message = "^doc", group = "documentation" },
+    { message = "^revert", group = "other" },
+    { message = "^style", skip = true },
+    { message = "^test", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^build", skip = true },
+    { message = "^chore", skip = true },
+    { message = "^.*", group = "other" },
+]
+
+# Non-publishing members (publish = false in their own Cargo.toml):
+[[package]]
+name = "dmg-forensic-cli"
+release = false
+publish = false
