@@ -1,0 +1,207 @@
+
+# cargo-vet config file
+
+[cargo-vet]
+version = "0.10"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.embark]
+url = "https://raw.githubusercontent.com/EmbarkStudios/rust-ecosystem/main/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/rust-crate-audits/main/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[policy.dmg-core]
+audit-as-crates-io = true
+
+[policy.dmg-forensic]
+audit-as-crates-io = true
+
+[[exemptions.anyhow]]
+version = "1.0.102"
+criteria = "safe-to-run"
+
+[[exemptions.bzip2-rs]]
+version = "0.1.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.cfg-if]]
+version = "1.0.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.crc]]
+version = "3.4.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.crc-catalog]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.crc32fast]]
+version = "1.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.dmg-core]]
+version = "0.1.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.dmg-forensic]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.errno]]
+version = "0.3.14"
+criteria = "safe-to-run"
+
+[[exemptions.fastrand]]
+version = "2.4.1"
+criteria = "safe-to-run"
+
+[[exemptions.flate2]]
+version = "1.1.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.forensic-vfs]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.forensicnomicon]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.forensicnomicon-core]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.forensicnomicon-data]]
+version = "1.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.getrandom]]
+version = "0.4.2"
+criteria = "safe-to-run"
+
+[[exemptions.hashbrown]]
+version = "0.15.5"
+criteria = "safe-to-run"
+
+[[exemptions.id-arena]]
+version = "2.3.0"
+criteria = "safe-to-run"
+
+[[exemptions.indexmap]]
+version = "2.14.0"
+criteria = "safe-to-run"
+
+[[exemptions.itoa]]
+version = "1.0.18"
+criteria = "safe-to-run"
+
+[[exemptions.libc]]
+version = "0.2.186"
+criteria = "safe-to-run"
+
+[[exemptions.linux-raw-sys]]
+version = "0.12.1"
+criteria = "safe-to-run"
+
+[[exemptions.log]]
+version = "0.4.30"
+criteria = "safe-to-run"
+
+[[exemptions.lzfse_rust]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.lzma-rs]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.memchr]]
+version = "2.8.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.once_cell]]
+version = "1.21.4"
+criteria = "safe-to-run"
+
+[[exemptions.prettyplease]]
+version = "0.2.37"
+criteria = "safe-to-run"
+
+[[exemptions.quick-xml]]
+version = "0.41.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.r-efi]]
+version = "6.0.0"
+criteria = "safe-to-run"
+
+[[exemptions.rustix]]
+version = "1.1.4"
+criteria = "safe-to-run"
+
+[[exemptions.semver]]
+version = "1.0.28"
+criteria = "safe-to-run"
+
+[[exemptions.serde]]
+version = "1.0.228"
+criteria = "safe-to-run"
+
+[[exemptions.serde_core]]
+version = "1.0.228"
+criteria = "safe-to-run"
+
+[[exemptions.serde_derive]]
+version = "1.0.228"
+criteria = "safe-to-run"
+
+[[exemptions.serde_json]]
+version = "1.0.150"
+criteria = "safe-to-run"
+
+[[exemptions.simd-adler32]]
+version = "0.3.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.state-history-forensic]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.syn]]
+version = "2.0.117"
+criteria = "safe-to-deploy"
+
+[[exemptions.thiserror]]
+version = "2.0.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.thiserror-impl]]
+version = "2.0.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.tinyvec]]
+version = "1.11.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-ident]]
+version = "1.0.24"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-link]]
+version = "0.2.1"
+criteria = "safe-to-run"
+
+[[exemptions.windows-sys]]
+version = "0.61.2"
+criteria = "safe-to-run"
+
+[[exemptions.zmij]]
+version = "1.0.21"
+criteria = "safe-to-run"
