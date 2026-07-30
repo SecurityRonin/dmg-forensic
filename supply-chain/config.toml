@@ -17,10 +17,10 @@ url = "https://raw.githubusercontent.com/google/rust-crate-audits/main/audits.to
 url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 
 [policy.dmg-core]
-audit-as-crates-io = true
+audit-as-crates-io = false
 
 [policy.dmg-forensic]
-audit-as-crates-io = true
+audit-as-crates-io = false
 
 [[exemptions.anyhow]]
 version = "1.0.104"
