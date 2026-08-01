@@ -1,6 +1,41 @@
 
 # cargo-vet imports lock
 
+[[publisher.forensic-vfs]]
+version = "0.3.0"
+when = "2026-07-16"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.forensicnomicon]]
+version = "1.1.0"
+when = "2026-07-06"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.forensicnomicon-core]]
+version = "1.2.0"
+when = "2026-07-16"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.forensicnomicon-data]]
+version = "1.0.0"
+when = "2026-06-28"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
+[[publisher.state-history-forensic]]
+version = "0.1.0"
+when = "2026-06-16"
+user-id = 347968
+user-login = "h4x0r"
+user-name = "Albert Hui"
+
 [[publisher.unicode-xid]]
 version = "0.2.6"
 when = "2024-09-19"
