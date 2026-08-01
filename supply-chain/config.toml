@@ -46,14 +46,6 @@ criteria = "safe-to-deploy"
 version = "1.5.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.dmg-core]]
-version = "0.1.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.dmg-forensic]]
-version = "0.1.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.errno]]
 version = "0.3.14"
 criteria = "safe-to-run"
@@ -64,22 +56,6 @@ criteria = "safe-to-run"
 
 [[exemptions.flate2]]
 version = "1.1.9"
-criteria = "safe-to-deploy"
-
-[[exemptions.forensic-vfs]]
-version = "0.3.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.forensicnomicon]]
-version = "1.1.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.forensicnomicon-core]]
-version = "1.2.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.forensicnomicon-data]]
-version = "1.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.getrandom]]
@@ -168,10 +144,6 @@ criteria = "safe-to-run"
 
 [[exemptions.simd-adler32]]
 version = "0.3.9"
-criteria = "safe-to-deploy"
-
-[[exemptions.state-history-forensic]]
-version = "0.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.syn]]
