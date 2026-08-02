@@ -17,6 +17,8 @@
 //!
 //! HFS+ volume header is at byte offset 40*512+1024 = 21504 in the virtual disk.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use dmg::DmgReader;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
