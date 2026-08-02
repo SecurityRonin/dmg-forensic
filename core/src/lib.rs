@@ -11,6 +11,11 @@
 //! LZFSE/ULFO (`0x80000007`), and LZMA/ULMO (`0x80000008`) — every codec
 //! `hdiutil` emits. All decoders are pure Rust (no C dependencies).
 
+// Tests build known-good fixtures, where a panic on an unexpected value is the
+// intended failure mode. Production code stays under the workspace's
+// `unwrap_used`/`expect_used` denies.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 mod sparse;
 
 pub use sparse::{SparseBundleReader, SparseImageReader};
@@ -21,11 +26,16 @@ use base64::Engine;
 use flate2::read::ZlibDecoder;
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use safe_read::{be_u32, be_u64};
 use thiserror::Error;
 
 const KOLY_MAGIC: u32 = 0x6B6F_6C79; // b"koly"
 const MISH_MAGIC: u32 = 0x6D69_7368; // b"mish"
 const KOLY_SIZE: u64 = 512;
+
+/// Byte offset of the first `BLKXRun` in a MISH block, and the size of one run.
+const RUNS_START: usize = 204;
+const RUN_SIZE: usize = 40;
 
 const BLK_ZERO: u32 = 0x0000_0000;
 const BLK_RAW: u32 = 0x0000_0001;
@@ -147,14 +157,14 @@ impl<R: Read + Seek> DmgReader<R> {
         let mut koly = [0u8; 512];
         reader.read_exact(&mut koly)?;
 
-        let magic = u32::from_be_bytes(koly[0..4].try_into().unwrap());
+        let magic = be_u32(&koly, 0);
         if magic != KOLY_MAGIC {
             return Err(DmgError::NotADmg);
         }
 
-        let xml_offset = u64::from_be_bytes(koly[216..224].try_into().unwrap());
-        let xml_length = u64::from_be_bytes(koly[224..232].try_into().unwrap());
-        let sector_count = u64::from_be_bytes(koly[492..500].try_into().unwrap());
+        let xml_offset = be_u64(&koly, 216);
+        let xml_length = be_u64(&koly, 224);
+        let sector_count = be_u64(&koly, 492);
 
         // Reject an XML plist that claims to extend past the file — otherwise a
         // malformed koly could request a multi-terabyte allocation.
@@ -530,28 +540,37 @@ fn parse_mish(data: &[u8]) -> Result<Partition, DmgError> {
     if data.len() < 204 {
         return Err(DmgError::BadMish("too short".into()));
     }
-    let magic = u32::from_be_bytes(data[0..4].try_into().unwrap());
+    let magic = be_u32(data, 0);
     if magic != MISH_MAGIC {
         return Err(DmgError::BadMish(format!("bad magic {magic:#010x}")));
     }
-    let sector_number = u64::from_be_bytes(data[8..16].try_into().unwrap());
-    let file_data_offset = u64::from_be_bytes(data[24..32].try_into().unwrap());
-    let block_descriptors = u32::from_be_bytes(data[200..204].try_into().unwrap()) as usize;
+    let sector_number = be_u64(data, 8);
+    let file_data_offset = be_u64(data, 24);
+    let block_descriptors = be_u32(data, 200) as usize;
 
-    let runs_start = 204;
-    let run_size = 40;
-    if data.len() < runs_start + block_descriptors * run_size {
+    // `blockDescriptorCount` is attacker-controlled, so size the run list with
+    // checked arithmetic: on a 32-bit target `block_descriptors * RUN_SIZE`
+    // wraps (u32::MAX * 40 exceeds a 32-bit usize), which would let a truncated
+    // image slip past the length guard below.
+    let runs_end = block_descriptors
+        .checked_mul(RUN_SIZE)
+        .and_then(|n| n.checked_add(RUNS_START))
+        .ok_or_else(|| DmgError::BadMish("run list size overflows usize".into()))?;
+    if data.len() < runs_end {
         return Err(DmgError::BadMish("truncated run list".into()));
     }
 
+    // Bounded by the guard above: `block_descriptors` is now at most
+    // `(data.len() - RUNS_START) / RUN_SIZE`, so the reservation tracks the
+    // real input size rather than a claimed count.
     let mut runs = Vec::with_capacity(block_descriptors);
     for i in 0..block_descriptors {
-        let o = runs_start + i * run_size;
-        let entry_type = u32::from_be_bytes(data[o..o + 4].try_into().unwrap());
-        let sector_start = u64::from_be_bytes(data[o + 8..o + 16].try_into().unwrap());
-        let sector_count = u64::from_be_bytes(data[o + 16..o + 24].try_into().unwrap());
-        let data_offset = u64::from_be_bytes(data[o + 24..o + 32].try_into().unwrap());
-        let data_length = u64::from_be_bytes(data[o + 32..o + 40].try_into().unwrap());
+        let o = RUNS_START + i * RUN_SIZE;
+        let entry_type = be_u32(data, o);
+        let sector_start = be_u64(data, o + 8);
+        let sector_count = be_u64(data, o + 16);
+        let data_offset = be_u64(data, o + 24);
+        let data_length = be_u64(data, o + 32);
         runs.push(BlkxRun {
             entry_type,
             sector_start,

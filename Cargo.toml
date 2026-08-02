@@ -15,6 +15,9 @@ repository = "https://github.com/SecurityRonin/dmg-forensic"
 # Fleet members (path within the workspace; registry version for publish).
 dmg-core = { path = "core", version = "0.1.2" }
 forensicnomicon = "1"
+# The fleet's bounded integer readers — every offset/length field parsed from an
+# untrusted image goes through these (ADR-0012), never a hand-rolled slice+unwrap.
+safe-read = "0.2"
 thiserror = "2"
 tempfile  = "3"
 quick-xml = "0.41"
@@ -27,14 +30,25 @@ lzma-rs    = "0.3.0"
 lzfse_rust = "0.2.1"
 
 [workspace.lints.rust]
-unsafe_code = "deny"
+# No member contains an `unsafe` block or an `#[allow(unsafe_code)]` escape —
+# every codec is pure Rust — so this is `forbid` (not locally overridable)
+# rather than `deny` (fleet default, CLAUDE.core.md).
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
+all                     = { level = "warn", priority = -1 }
 pedantic                = { level = "warn", priority = -1 }
-module_name_repetitions = "allow"
-must_use_candidate      = "allow"
-missing_errors_doc      = "allow"
-missing_panics_doc      = "allow"
-cast_possible_truncation = "allow"
-cast_possible_wrap      = "allow"
-cast_sign_loss          = "allow"
+correctness             = { level = "deny", priority = -1 }
+suspicious              = { level = "deny", priority = -1 }
+# Panic-free: a UDIF image is untrusted, attacker-controllable input
+# (Paranoid Gatekeeper, ADR-0012).
+unwrap_used             = { level = "deny", priority = 0 }
+expect_used             = { level = "deny", priority = 0 }
+# priority 1 so these individual allows outrank the grouped warn/deny entries above.
+module_name_repetitions = { level = "allow", priority = 1 }
+must_use_candidate      = { level = "allow", priority = 1 }
+missing_errors_doc      = { level = "allow", priority = 1 }
+missing_panics_doc      = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap      = { level = "allow", priority = 1 }
+cast_sign_loss          = { level = "allow", priority = 1 }

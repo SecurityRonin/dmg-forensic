@@ -10,6 +10,8 @@
 //!    byte-identical image (full SHA-256 match). Skips cleanly when `hdiutil`
 //!    is unavailable (Linux/CI), exactly like an oracle-binary gate.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use dmg::{SparseBundleReader, SparseImageReader};
 use std::fmt::Write as _;
 use std::fs::File;
