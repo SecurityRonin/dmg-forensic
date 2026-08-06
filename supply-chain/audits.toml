@@ -27,6 +27,12 @@ user-id = 347968 # Albert Hui (h4x0r)
 start = "2026-06-28"
 end = "2027-08-01"
 
+[[trusted.safe-read]]
+criteria = "safe-to-deploy"
+user-id = 347968 # Albert Hui (h4x0r)
+start = "2026-07-15"
+end = "2027-08-06"
+
 [[trusted.state-history-forensic]]
 criteria = "safe-to-deploy"
 user-id = 347968 # Albert Hui (h4x0r)
