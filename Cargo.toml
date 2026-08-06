@@ -5,7 +5,7 @@ members = ["core", "forensic", "cli"]
 # Single source of truth for fields shared by every member (DRY): bump version /
 # MSRV / license here once; members inherit via `field.workspace = true`.
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -13,7 +13,7 @@ repository = "https://github.com/SecurityRonin/dmg-forensic"
 
 [workspace.dependencies]
 # Fleet members (path within the workspace; registry version for publish).
-dmg-core = { path = "core", version = "0.1.2" }
+dmg-core = { path = "core", version = "0.1.5" }
 forensicnomicon = "1"
 # The fleet's bounded integer readers — every offset/length field parsed from an
 # untrusted image goes through these (ADR-0012), never a hand-rolled slice+unwrap.
