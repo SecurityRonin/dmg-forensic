@@ -19,7 +19,7 @@ env:
 
 jobs:
   ci:
-    uses: SecurityRonin/fleet-ci/.github/workflows/rust-ci.yml@9234e1fa9f85b14a8d6fddc7a8f7378f7e30b183
+    uses: SecurityRonin/fleet-ci/.github/workflows/rust-ci.yml@85c7263e5e1a25a090f602419ac27f87aeb1d1e3
     with:
       # The old `test` job ran on ubuntu-latest only. `true` would newly gate on
       # macOS and Windows, which nothing here has ever been shown to pass.
